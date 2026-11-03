@@ -314,6 +314,12 @@ pub struct CadApp {
     /// The startup update check and its prompt (desktop; [`updates_ui`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub updates_rt: updates_ui::Runtime,
+    /// The shared suite palette read at startup, when the desktop host has one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub palette: Option<craft_ui::theme::palette::Palette>,
+    /// Watches the shared suite palette for changes (desktop only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub palette_watcher: craft_ui::theme::palette::PaletteWatcher,
 }
 
 impl CadApp {
@@ -369,6 +375,26 @@ impl CadApp {
             bedit: bedit::State::default(),
             #[cfg(not(target_arch = "wasm32"))]
             updates_rt: updates_ui::Runtime::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            palette: craft_ui::theme::palette::Palette::load().map(|loaded| loaded.palette),
+            #[cfg(not(target_arch = "wasm32"))]
+            palette_watcher: craft_ui::theme::palette::PaletteWatcher::from_env(),
+        }
+    }
+
+    /// Poll the shared palette while the viewport is visible, so a hidden window does not wake
+    /// every 400 ms. Returns whether a new palette arrived.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_palette(&mut self, ctx: &egui::Context) -> bool {
+        if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
+            return false;
+        }
+        match self.palette_watcher.poll(ctx) {
+            Some(loaded) => {
+                self.palette = Some(loaded.palette);
+                true
+            }
+            None => false,
         }
     }
 
@@ -816,11 +842,22 @@ impl CadApp {
         }
         // Resolved every frame, so a System choice follows the OS appearance live (winit and the
         // browser report changes as input); the saved choice itself never changes here.
-        let shown = self.ui.theme.resolve(ctx.system_theme());
+        let saved = self.ui.theme.resolve(ctx.system_theme());
+        #[cfg(not(target_arch = "wasm32"))]
+        let palette_changed = self.poll_palette(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let palette_changed = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let palette = self.palette.as_ref();
+        #[cfg(target_arch = "wasm32")]
+        let palette: Option<&craft_ui::theme::palette::Palette> = None;
+        // A loaded palette decides the light/dark family; the saved theme does otherwise.
+        let shown = theme::family(saved, palette);
         theme::set_active(shown);
         theme::set_canvas(self.options.canvas());
-        let follows_system = self.ui.theme == theme::ThemePref::System;
-        if self.shown_theme != Some(shown) || self.shown_follows_system != follows_system {
+        let follows_system = palette.is_none() && self.ui.theme == theme::ThemePref::System;
+        if palette_changed || self.shown_theme != Some(shown) || self.shown_follows_system != follows_system {
+            theme::set_palette(palette);
             theme::apply(ctx, shown, follows_system);
             self.shown_theme = Some(shown);
             self.shown_follows_system = follows_system;

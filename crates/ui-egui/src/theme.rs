@@ -7,8 +7,9 @@
 //! part of the interface theme. [`Tokens::get`] returns the palette of the theme in use, which
 //! [`CadApp::logic`](crate::CadApp::logic) resolves once per frame from the user's [`ThemePref`].
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
+use craft_ui::theme::palette::Palette;
 use egui::{Color32, FontFamily, FontId, Theme, Visuals};
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +56,8 @@ impl ThemePref {
 thread_local! {
     /// The theme in use on the UI thread (set by [`set_active`] each frame).
     static ACTIVE: Cell<Theme> = const { Cell::new(Theme::Dark) };
+    /// The shared suite palette, when one is loaded (set by [`set_palette`]).
+    static PALETTE: RefCell<Option<Palette>> = const { RefCell::new(None) };
 }
 
 /// The theme [`Tokens::get`] returns colours for.
@@ -64,6 +67,27 @@ pub fn active() -> Theme {
 
 pub fn set_active(theme: Theme) {
     ACTIVE.with(|a| a.set(theme));
+}
+
+/// The family the interface shows: the palette's when one is loaded, the saved theme otherwise.
+pub fn family(saved: Theme, palette: Option<&Palette>) -> Theme {
+    match palette {
+        Some(palette) if palette.is_dark() => Theme::Dark,
+        Some(_) => Theme::Light,
+        None => saved,
+    }
+}
+
+/// Install the suite palette for the tokens and visuals the next frame reads.
+pub fn set_palette(palette: Option<&Palette>) {
+    PALETTE.with(|current| *current.borrow_mut() = palette.cloned());
+}
+
+fn tokens_for(theme: Theme) -> Tokens {
+    PALETTE.with(|palette| match palette.borrow().as_ref() {
+        Some(palette) => Tokens::for_palette(theme, palette),
+        None => Tokens::of(theme),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,9 +237,39 @@ impl Tokens {
         }
     }
 
+    /// The palette of `theme` with the shared suite palette's chrome colours.
+    ///
+    /// Only the interface chrome changes: the drawing area (canvas, grid, axes, crosshair, paper)
+    /// and the drafting colours keep the built-in values.
+    pub fn for_palette(theme: Theme, palette: &Palette) -> Tokens {
+        let base = Tokens::of(theme);
+        let background = palette.background();
+        let surface = palette.surface();
+        let accent = palette.accent();
+        Tokens {
+            chrome: background,
+            chrome_dark: surface,
+            panel: surface,
+            tab_active: palette.surface_alt(),
+            border: palette.outline(),
+            text: palette.text(),
+            text_dim: palette.text_muted(),
+            text_faint: mix(palette.text_muted(), background, 0.35),
+            icon: mix(palette.text(), palette.text_muted(), 0.25),
+            accent,
+            selection: accent,
+            hover: mix(accent, palette.text(), 0.45),
+            field: palette.surface_alt(),
+            cmd_bg: with_alpha(surface, 0xf0),
+            list_bg: background,
+            warn: palette.warning(),
+            ..base
+        }
+    }
+
     /// The palette of the theme in use, with the user's drawing-area colours ([`set_canvas`]).
     pub fn get() -> Tokens {
-        CANVAS.with(Cell::get).over(Tokens::of(active()))
+        CANVAS.with(Cell::get).over(tokens_for(active()))
     }
 
     /// These tokens with `bg` as the model-space background: the grid, axes, crosshair and the
@@ -295,6 +349,11 @@ pub fn luminance(c: Color32) -> f32 {
 fn mix(a: Color32, b: Color32, f: f32) -> Color32 {
     let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * f).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// `c` made translucent with `alpha` (unmultiplied, as the token tables write it).
+fn with_alpha(c: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
 pub fn small() -> FontId {
@@ -755,7 +814,7 @@ fn any_script(faces: &[cadcraft_fonts::CraftFont], script: &str) -> bool {
 
 /// egui's visuals for `theme`, from its tokens.
 fn visuals(theme: Theme) -> Visuals {
-    let t = Tokens::of(theme);
+    let t = tokens_for(theme);
     let mut v = match theme {
         Theme::Dark => Visuals::dark(),
         Theme::Light => Visuals::light(),
@@ -868,5 +927,127 @@ mod tests {
         assert!(!super::any_script(&[bold], "Hans") && !super::any_script(&faces, "Ara"));
         assert!(!super::embedded_script("Hans") || super::can_show("zh"));
         assert!(super::can_show("en") && super::can_show("uk"));
+    }
+
+    use super::{Palette, Tokens};
+    use egui::{Color32, Theme};
+
+    fn dark_palette() -> Palette {
+        Palette {
+            name: "test-dark".into(),
+            dark: true,
+            base: [
+                Color32::from_rgb(0x10, 0x12, 0x14),
+                Color32::from_rgb(0x1a, 0x1d, 0x21),
+                Color32::from_rgb(0x24, 0x28, 0x2e),
+                Color32::from_rgb(0x3a, 0x40, 0x48),
+                Color32::from_rgb(0x88, 0x90, 0x9a),
+                Color32::from_rgb(0xdd, 0xe2, 0xe8),
+                Color32::from_rgb(0xee, 0xf1, 0xf4),
+                Color32::from_rgb(0xfa, 0xfb, 0xfc),
+                Color32::from_rgb(0xd0, 0x40, 0x40),
+                Color32::from_rgb(0xd0, 0x90, 0x30),
+                Color32::from_rgb(0xd0, 0xb0, 0x30),
+                Color32::from_rgb(0x40, 0xa0, 0x50),
+                Color32::from_rgb(0x30, 0x90, 0xa0),
+                Color32::from_rgb(0x30, 0x70, 0xe0),
+                Color32::from_rgb(0x90, 0x50, 0xc0),
+                Color32::from_rgb(0xa0, 0x60, 0x40),
+            ],
+            accent: None,
+        }
+    }
+
+    fn light_palette() -> Palette {
+        let mut palette = dark_palette();
+        palette.name = "test-light".into();
+        palette.dark = false;
+        palette.base = [
+            Color32::from_rgb(0xf7, 0xf7, 0xf7),
+            Color32::from_rgb(0xeb, 0xeb, 0xeb),
+            Color32::from_rgb(0xdf, 0xdf, 0xdf),
+            Color32::from_rgb(0xb0, 0xb0, 0xb0),
+            Color32::from_rgb(0x60, 0x60, 0x60),
+            Color32::from_rgb(0x18, 0x18, 0x18),
+            Color32::from_rgb(0x10, 0x10, 0x10),
+            Color32::from_rgb(0x00, 0x00, 0x00),
+            Color32::from_rgb(0xb0, 0x30, 0x30),
+            Color32::from_rgb(0xa0, 0x70, 0x20),
+            Color32::from_rgb(0xa0, 0x88, 0x20),
+            Color32::from_rgb(0x30, 0x80, 0x38),
+            Color32::from_rgb(0x20, 0x70, 0x78),
+            Color32::from_rgb(0x10, 0x60, 0xc0),
+            Color32::from_rgb(0x70, 0x40, 0x98),
+            Color32::from_rgb(0x80, 0x48, 0x30),
+        ];
+        palette
+    }
+
+    #[test]
+    fn a_dark_palette_maps_the_theme_chrome() {
+        let palette = dark_palette();
+        let tokens = Tokens::for_palette(Theme::Dark, &palette);
+        assert_eq!(tokens.chrome, palette.background());
+        assert_eq!(tokens.chrome_dark, palette.surface());
+        assert_eq!(tokens.panel, palette.surface());
+        assert_eq!(tokens.border, palette.outline());
+        assert_eq!(tokens.text, palette.text());
+        assert_eq!(tokens.text_dim, palette.text_muted());
+        assert_eq!(tokens.accent, palette.accent());
+        assert_eq!(tokens.selection, palette.accent());
+        assert_eq!(tokens.field, palette.surface_alt());
+        assert_eq!(tokens.list_bg, palette.background());
+        assert_eq!(tokens.warn, palette.warning());
+        // The drawing area keeps the built-in colours.
+        assert_eq!(tokens.canvas, Tokens::DARK.canvas);
+        assert_eq!(tokens.grid_minor, Tokens::DARK.grid_minor);
+        assert_eq!(tokens.axis_x, Tokens::DARK.axis_x);
+        assert_eq!(tokens.crosshair, Tokens::DARK.crosshair);
+        assert_eq!(tokens.paper, Tokens::DARK.paper);
+    }
+
+    #[test]
+    fn a_light_palette_maps_the_theme_chrome() {
+        let palette = light_palette();
+        let tokens = Tokens::for_palette(Theme::Light, &palette);
+        assert_eq!(tokens.chrome, palette.background());
+        assert_eq!(tokens.panel, palette.surface());
+        assert_eq!(tokens.border, palette.outline());
+        assert_eq!(tokens.text, palette.text());
+        assert_eq!(tokens.accent, palette.accent());
+        assert_eq!(tokens.field, palette.surface_alt());
+        // LIGHT inherits the drawing-area colours from DARK.
+        assert_eq!(tokens.canvas, Tokens::LIGHT.canvas);
+        assert_eq!(tokens.crosshair, Tokens::LIGHT.crosshair);
+        assert_eq!(tokens.paper, Tokens::LIGHT.paper);
+    }
+
+    #[test]
+    fn the_palette_family_overrides_the_saved_theme() {
+        let light = light_palette();
+        let dark = dark_palette();
+        assert_eq!(super::family(Theme::Dark, Some(&light)), Theme::Light);
+        assert_eq!(super::family(Theme::Light, Some(&dark)), Theme::Dark);
+    }
+
+    #[test]
+    fn without_a_palette_the_saved_theme_stands() {
+        for theme in [Theme::Dark, Theme::Light] {
+            assert_eq!(super::family(theme, None), theme);
+        }
+        assert_eq!(Tokens::of(Theme::Dark), Tokens::DARK);
+        assert_eq!(Tokens::of(Theme::Light), Tokens::LIGHT);
+    }
+
+    #[test]
+    fn the_theme_accent_contrast_text_stays_readable() {
+        for accent in [Color32::from_rgb(0x30, 0x70, 0xe0), Color32::from_rgb(0xe0, 0xc0, 0x40), Color32::WHITE, Color32::BLACK] {
+            let mut palette = dark_palette();
+            palette.accent = Some(accent);
+            let tokens = Tokens::for_palette(Theme::Dark, &palette);
+            assert_eq!(tokens.accent, accent);
+            let ink = palette.contrast_text();
+            assert!((super::luminance(accent) - super::luminance(ink)).abs() >= 0.35, "{accent:?} on {ink:?}");
+        }
     }
 }
