@@ -15,6 +15,10 @@
   # The package of this flake; `flake.nix` passes it through `_module.args`, so importing the
   # module directly needs no overlay.
   cadcraftPackage ? pkgs.cadcraft,
+  # `flake.nix` passes the source build and the pre-built release binary separately. Importing the
+  # module directly falls back to `cadcraftPackage` and no binary.
+  cadcraftSourcePackage ? cadcraftPackage,
+  cadcraftBinaryPackage ? null,
   ...
 }:
 
@@ -44,10 +48,24 @@ in
   options.programs.cadcraft = {
     enable = mkEnableOption "CADCraft";
 
+    useBinary = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Install the pre-built Linux binary from `binary-url.json` when this system has one,
+        instead of building from source. Falls back to the source build when the file is missing
+        or the system is unsupported.
+      '';
+    };
+
     package = mkOption {
       type = types.package;
-      default = cadcraftPackage;
-      defaultText = lib.literalMD "the `cadcraft` package of this flake";
+      default =
+        if cfg.useBinary && cadcraftBinaryPackage != null then
+          cadcraftBinaryPackage
+        else
+          cadcraftSourcePackage;
+      defaultText = lib.literalMD "the pre-built binary from `binary-url.json`, or the source build";
       description = "The CADCraft package to install.";
     };
 
